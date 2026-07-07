@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Data, model checkpoints, and generated outputs (not redistributed).
+# Anchored to the repo root so source dirs like src/data and src/models
+# are NOT matched.
+/data/
+/models/
+/results/
+*.pth
+*.pt
+*.ckpt
+
+# Run markers / logs
+FINAL_ANALYSIS_DONE
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
