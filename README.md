@@ -96,3 +96,13 @@ Released under the MIT License (see `LICENSE`).
 A BibTeX entry will be added once the paper is published. Until then, please
 cite the manuscript by title and the author, Donghyun Lee (Hankuk University of
 Foreign Studies).
+
+## Acknowledgements
+
+This work was partly supported by the Institute of Information & Communications
+Technology Planning & Evaluation (IITP) grant funded by the Korea government
+(MSIT) (No. RS-2026-25522834, Development of an Ultra-Fast, High-Reliability
+Physics-AI Hybrid Disaster Response Technology Based on Mamba-Flow Matching), by
+the National Research Foundation of Korea (NRF) grant funded by the Korea
+government (MSIT) (No. RS-2026-25493931), and by the Hankuk University of Foreign
+Studies Research Fund of 2026.
