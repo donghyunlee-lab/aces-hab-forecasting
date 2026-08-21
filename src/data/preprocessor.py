@@ -14,8 +14,15 @@ class DataPreprocessor:
     3. 사이트별 시퀀스 생성 (temporal leakage 방지)
     """
 
-    def __init__(self, data_path: str, site_names: List[str] = None, 
-                 apply_log_transform: bool = True, use_panel_data: bool = True):
+    CORE_FEATURES = [
+        '수온 (℃)', '수소이온농도', '전기전도도 (μS/cm)', '용존산소 (mg/L)',
+        '탁도 (NTU)', '총유기탄소 (mg/L)', '클로로필-a (mg/㎥)',
+        '총질소 (mg/L)', '총인 (mg/L)'
+    ]
+
+    def __init__(self, data_path: str, site_names: List[str] = None,
+                 apply_log_transform: bool = True, use_panel_data: bool = True,
+                 core_features_only: bool = True):
         self.data_path = data_path
         # Phase 1: Panel data mode - multiple sites
         if site_names is None:
@@ -25,6 +32,7 @@ class DataPreprocessor:
         self.scaler = MinMaxScaler()
         self.feature_names = None
         self.apply_log_transform = apply_log_transform
+        self.core_features_only = core_features_only
         self.log_transform_cols = []  # 로그 변환된 컬럼 추적
         self.target_idx = None  # 타겟 변수 인덱스 (Chl-a)
         self.station_id_map = {site: idx for idx, site in enumerate(site_names)}  # 사이트 → ID 매핑
@@ -77,7 +85,8 @@ class DataPreprocessor:
             print(f"Loaded {len(site_df)} records for site: {site_name}")
             return site_df
 
-    def preprocess(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    def preprocess(self, df: pd.DataFrame,
+                   fit_period: Tuple[str, str]) -> Tuple[pd.DataFrame, List[str]]:
         """
         Preprocess data:
         - Select relevant features (numeric columns)
@@ -91,6 +100,21 @@ class DataPreprocessor:
         if self.use_panel_data:
             exclude_cols.append('Station_ID')  # Phase 1: Station_ID는 별도로 관리
         feature_cols = [col for col in df.columns if col not in exclude_cols and df[col].dtype in [np.float64, np.float32, np.int64]]
+
+        if fit_period is None:
+            raise ValueError("fit_period is required: preprocessing statistics must be fit on training data only")
+        fit_start, fit_end = pd.to_datetime(fit_period[0]), pd.to_datetime(fit_period[1])
+        fit_mask = (df['측정일'] >= fit_start) & (df['측정일'] <= fit_end)
+        if not fit_mask.any():
+            raise ValueError(f"fit_period {fit_period} contains no rows")
+
+        # The redesign excludes the highly imputed trace-organic columns.  They
+        # lack a direct Chl-a mechanism and add avoidable reconstruction risk.
+        if self.core_features_only:
+            missing_core = [col for col in self.CORE_FEATURES if col not in feature_cols]
+            if missing_core:
+                raise ValueError(f"missing required core features: {missing_core}")
+            feature_cols = list(self.CORE_FEATURES)
 
         # Exclude ECD measurement variables (keep only general measurement)
         # ECD variables are duplicates of the same substances measured with different methods
@@ -118,15 +142,16 @@ class DataPreprocessor:
         if self.apply_log_transform:
             # Identify high-variance features (coefficient of variation > 1.0)
             high_var_cols = []
+            train_numeric = df_numeric.loc[fit_mask]
             for col in feature_cols:
-                if df_numeric[col].std() > 0:
-                    cv = df_numeric[col].std() / (df_numeric[col].mean() + 1e-6)
+                if train_numeric[col].std() > 0:
+                    cv = train_numeric[col].std() / (train_numeric[col].mean() + 1e-6)
                     if cv > 1.0 or col == target_col:
                         high_var_cols.append(col)
             
             # Apply log1p transformation
             for col in high_var_cols:
-                if df_numeric[col].min() >= 0:  # Only apply to non-negative values
+                if train_numeric[col].min() >= 0:  # decision uses training rows only
                     df_numeric[col] = np.log1p(df_numeric[col])
                     self.log_transform_cols.append(col)
                     print(f"  Applied log1p to: {col}")
@@ -134,11 +159,20 @@ class DataPreprocessor:
         # Feature Engineering: Add 1-day difference and 7-day moving average for target
         # Apply after log transformation so features are in the same scale
         if target_col and target_col in df_numeric.columns:
-            # 1-day difference (on log-transformed scale if applicable)
-            df_numeric[f'{target_col}_diff1'] = df_numeric[target_col].diff(1).fillna(0)
-            
-            # 7-day moving average (on log-transformed scale if applicable)
-            df_numeric[f'{target_col}_ma7'] = df_numeric[target_col].rolling(window=7, min_periods=1).mean().fillna(df_numeric[target_col])
+            if self.use_panel_data and 'Station_ID' in df.columns:
+                groups = df['Station_ID']
+                df_numeric[f'{target_col}_diff1'] = (
+                    df_numeric[target_col].groupby(groups).diff(1).fillna(0)
+                )
+                df_numeric[f'{target_col}_ma7'] = (
+                    df_numeric[target_col].groupby(groups)
+                    .transform(lambda series: series.rolling(window=7, min_periods=1).mean())
+                )
+            else:
+                df_numeric[f'{target_col}_diff1'] = df_numeric[target_col].diff(1).fillna(0)
+                df_numeric[f'{target_col}_ma7'] = (
+                    df_numeric[target_col].rolling(window=7, min_periods=1).mean()
+                )
             
             # Update feature columns list
             feature_cols.extend([f'{target_col}_diff1', f'{target_col}_ma7'])
@@ -147,8 +181,9 @@ class DataPreprocessor:
         self.feature_names = feature_cols
 
         # Normalize features
+        self.scaler.fit(df_numeric.loc[fit_mask])
         df_normalized = pd.DataFrame(
-            self.scaler.fit_transform(df_numeric),
+            self.scaler.transform(df_numeric),
             columns=feature_cols,
             index=df.index
         )
@@ -243,6 +278,28 @@ class DataPreprocessor:
         
         return np.array(X), np.array(y).reshape(-1, 1), np.array(station_ids_seq)
 
+    @staticmethod
+    def create_sequence_dates(dates: np.ndarray, station_ids: np.ndarray = None,
+                              seq_len: int = 30) -> np.ndarray:
+        """Align target dates with sequences, resetting the lookback per site.
+
+        Panel data are stacked by station.  A single global ``dates[seq_len:]``
+        slice therefore drops the lookback only once and mislabels every site
+        after the first.  This helper mirrors ``create_sequences`` and drops
+        ``seq_len`` dates independently inside each contiguous station block.
+        """
+        dates = np.asarray(dates)
+        if station_ids is None:
+            return dates[seq_len:]
+        station_ids = np.asarray(station_ids)
+        if len(dates) != len(station_ids):
+            raise ValueError("dates and station_ids must have equal length")
+        aligned = []
+        for station_id in np.unique(station_ids):
+            site_dates = dates[station_ids == station_id]
+            aligned.extend(site_dates[seq_len:])
+        return np.asarray(aligned)
+
     def split_train_test(self, df: pd.DataFrame, df_normalized: pd.DataFrame,
                         seq_len: int = 30,
                         train_period: Tuple[str, str] = ('2013-01-01', '2022-12-31'),
@@ -297,8 +354,18 @@ class DataPreprocessor:
             print(f"Validation set: {X_val.shape[0]} sequences")
             print(f"Test set: {X_test.shape[0]} sequences")
 
-        # Get corresponding dates for test set
-        test_dates = df[test_mask]['측정일'].values[seq_len:] if len(df[test_mask]) > seq_len else df[test_mask]['측정일'].values
+        # Align target dates with site-aware sequence generation.  Slicing the
+        # station-stacked panel globally mislabels all stations after the first.
+        val_dates = self.create_sequence_dates(
+            df[val_mask]['측정일'].values,
+            val_station_ids if self.use_panel_data and 'Station_ID' in df.columns else None,
+            seq_len,
+        )
+        test_dates = self.create_sequence_dates(
+            df[test_mask]['측정일'].values,
+            test_station_ids if self.use_panel_data and 'Station_ID' in df.columns else None,
+            seq_len,
+        )
 
         return {
             'X_train': X_train, 'y_train': y_train,
@@ -307,6 +374,7 @@ class DataPreprocessor:
             'train_station_ids': train_station_ids_seq,
             'val_station_ids': val_station_ids_seq,
             'test_station_ids': test_station_ids_seq,
+            'val_dates': val_dates,
             'test_dates': test_dates,
             'original_df': df,
             'df_normalized': df_normalized

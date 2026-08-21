@@ -23,3 +23,9 @@ FINAL_ANALYSIS_DONE
 .DS_Store
 .idea/
 .vscode/
+
+__pycache__/
+*.pyc
+gis/outputs/
+gis_data/
+.DS_Store

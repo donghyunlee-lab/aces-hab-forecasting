@@ -48,7 +48,11 @@ class HABTrainer:
         else:
             val_dataset = TensorDataset(X_val, y_val)
             
-        use_multiprocessing = not torch.backends.mps.is_available()
+        # run_experiment materializes the full panel as tensors on the selected
+        # device before constructing HABTrainer. CUDA-resident TensorDatasets
+        # must stay in the parent process and cannot use CPU pin-memory.
+        default_workers = 0
+        num_workers = int(self.config.get('num_workers', default_workers))
         batch_size = self.config['batch_size']
         
         # Deterministic shuffling: a seeded generator makes batch order
@@ -58,10 +62,10 @@ class HABTrainer:
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=12 if use_multiprocessing else 0,
-            pin_memory=True if not torch.backends.mps.is_available() else False,
-            persistent_workers=True if use_multiprocessing and 12 > 0 else False,
-            prefetch_factor=2 if use_multiprocessing and 12 > 0 else None,
+            num_workers=num_workers,
+            pin_memory=False,
+            persistent_workers=num_workers > 0,
+            prefetch_factor=2 if num_workers > 0 else None,
             generator=make_generator(seed),
             worker_init_fn=seed_worker
         )

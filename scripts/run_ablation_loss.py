@@ -61,7 +61,7 @@ ARM_CONFIG = {
     "Faithful":     {"train_uq": "Faithful", "use_iso_nll": False},
 }
 
-# E2: loss head-to-head on the Mamba backbone.
+# E2: loss head-to-head on the ISO-UQ backbone.
 E2 = [("Mamba", arm) for arm in
       ["Standard_NLL", "BetaNLL_0.5", "BetaNLL_1.0", "Faithful", "ISO_NLL"]]
 # E3: cross-backbone generality of P_corr (Mamba covered by E2).

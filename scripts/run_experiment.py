@@ -48,6 +48,7 @@ def create_config(model_type: str = 'iTransformer', uq_method: str = 'Laplace',
         'data_path': f'{base_path}/data/imputed_daily_data.csv',
         'site_names': selected_sites,  # 5 sites (Configurable)
         'use_panel_data': True,
+        'core_features_only': True,
         
         # Period Selection (Configurable)
         'train_period': (f'{train_start_year}-01-01', f'{train_end_year}-12-31'),
@@ -115,11 +116,12 @@ def run_experiment(config: Dict):
         data_path=config['data_path'],
         site_names=config['site_names'],
         apply_log_transform=config.get('apply_log_transform', True),
-        use_panel_data=config.get('use_panel_data', True)
+        use_panel_data=config.get('use_panel_data', True),
+        core_features_only=config.get('core_features_only', True)
     )
 
     df = preprocessor.load_data()
-    df_normalized, feature_names = preprocessor.preprocess(df)
+    df_normalized, feature_names = preprocessor.preprocess(df, fit_period=config['train_period'])
     data_split = preprocessor.split_train_test(
         df, df_normalized, 
         seq_len=config['seq_len'],
@@ -178,6 +180,10 @@ def run_experiment(config: Dict):
         trainer = HABTrainer(model, config)
         model = trainer.train(X_train, y_train, X_val, y_val, train_station_ids, val_station_ids)
 
+    if config.get('training_only', False):
+        print("\n[TRAINING ONLY] Best checkpoint saved; skipping inference and plots.")
+        return model, None, None, None
+
     # ====== STEP 4: LAPLACE APPROXIMATION ======
     # Only if NOT Ensemble and needed
     if uq_method in ['Laplace', 'ACP'] and not isinstance(model, list):
@@ -231,6 +237,45 @@ def run_experiment(config: Dict):
         var_denorm = var_denorm * ((pred_mean_denorm + 1) ** 2) # Delta method approx
     
     sigma = np.sqrt(var_denorm)
+
+    # Save the complete validation prediction stream when requested.  The
+    # redesigned benchmark needs all 2023 scores and must not rely on the old
+    # 20%-calibration shortcut below.
+    if config.get('val_results_save_path'):
+        val_mean, val_var = predict_uncertainty(
+            model, X_val,
+            station_ids=val_station_ids,
+            method=uq_method if uq_method != 'ACP' else 'Laplace',
+            laplace=laplace if uq_method in ['Laplace', 'ACP'] else None,
+            n_samples=50
+        )
+        val_mean_np = val_mean.cpu().numpy().squeeze(1)
+        val_var_denorm = val_var.cpu().numpy().squeeze(1) * (data_range ** 2)
+        val_dummy = np.zeros((len(val_mean_np), len(feature_names)))
+        val_dummy[:, target_idx] = val_mean_np
+        val_mean_denorm = preprocessor.inverse_transform(val_dummy)[:, target_idx]
+        if preprocessor.apply_log_transform:
+            val_var_denorm = val_var_denorm * ((val_mean_denorm + 1) ** 2)
+        val_sigma = np.sqrt(val_var_denorm)
+
+        y_val_np = y_val.cpu().numpy().squeeze(1)
+        y_val_dummy = np.zeros((len(y_val_np), len(feature_names)))
+        y_val_dummy[:, target_idx] = y_val_np
+        y_val_denorm = preprocessor.inverse_transform(y_val_dummy)[:, target_idx]
+        val_df = pd.DataFrame({
+            'Date': data_split['val_dates'][:len(val_mean_denorm)],
+            'Actual': y_val_denorm,
+            'Predicted_Mean': val_mean_denorm,
+            'Predicted_Std': val_sigma,
+        })
+        if val_station_ids is not None:
+            val_sid = data_split['val_station_ids'][:len(val_df)]
+            site_map = {i: name for i, name in enumerate(config['site_names'])}
+            val_df['Station_ID'] = val_sid
+            val_df['Site'] = pd.Series(val_sid).map(site_map).to_numpy()
+        os.makedirs(os.path.dirname(config['val_results_save_path']), exist_ok=True)
+        val_df.to_csv(config['val_results_save_path'], index=False)
+        print(f"Validation predictions saved to {config['val_results_save_path']}")
     
     # Apply ACP calibration if requested
     if uq_method == 'ACP' or config.get('apply_acp', False):

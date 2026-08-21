@@ -1,0 +1,44 @@
+protocol_schema_version: 1.0.0
+study_id: uq-iso-hab
+analysis_id: clean_reanalysis_v2
+status: draft
+analysis_type: forecasting
+scientific_estimand: One-day-ahead interval calibration under chronological distribution shift, evaluated on a sealed 2025 test year never examined in any prior version, across two basins.
+source: {network: automatic, resolution: daily, data_release: weis-core-v2}
+variables: [water_temperature, ph, electrical_conductivity, dissolved_oxygen, turbidity, total_organic_carbon, chlorophyll_a, total_nitrogen, total_phosphorus]
+cohort:
+  basin_names: [금강, 낙동강]
+  include_station_names: [공주, 대청호, 갑천, 부여, 용담호, 칠서, 진주, 다산, 성서, 적포]
+  exclude_station_names: []
+  exclude_alias_groups: []
+  selection_criteria:
+    selection_freeze_date: '2026-08-18'
+    geum_station_rule: Carried over unchanged from clean_reanalysis_v1 (five-station cohort).
+    nakdong_station_rule: Top five Nakdong-basin automatic-network stations ranked by the minimum, across the nine protocol variables, of total daily numeric observations over 2021-2024. Ranking used 2021-2024 coverage registries only; no 2025 observation values or coverage were consulted.
+time:
+  splits:
+    train: {start: '2021-01-01', end: '2023-12-31'}
+    validation: {start: '2024-01-01', end: '2024-12-31'}
+    test: {start: '2025-01-01', end: '2025-12-31'}
+  embargo_days: 1
+aggregation: {frequency: daily, statistic: none, minimum_numeric_observations: 1}
+forecast: {lookback_steps: 30, horizons_steps: [1], anchor_frequency: daily}
+target_policy:
+  variable: chlorophyll_a
+  require_status: observed_numeric
+  allow_imputation: false
+  allow_smoothing: false
+  allow_clipping: false
+input_policy:
+  primary_strategy: mask_and_causal_ffill_then_train_median
+  max_forward_fill_steps: 3
+  add_observation_mask: true
+  add_time_since_observed: true
+  distribution_fit_scope: train_only
+  forbidden_operations: [backfill, bidirectional_interpolation, centered_rolling, full_period_statistics]
+  sensitivity_strategies: [mask_only, causal_ffill_1, causal_ffill_3]
+publication_separation:
+  primary_or_secondary: primary
+  related_studies: [timellm, ontology-algae]
+  shared_source_disclosure_required: true
+  reuse_primary_results: false
